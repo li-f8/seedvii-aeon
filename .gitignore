@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Data & results (keep directory, ignore contents)
+data/*
+!data/.gitkeep
+results/logs/*
+results/checkpoints/*
+results/figures/*
+!results/logs/.gitkeep
+!results/checkpoints/.gitkeep
+!results/figures/.gitkeep
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large files
+*.mat
+*.npy
+*.npz
+*.pkl
+*.pt
+*.pth
