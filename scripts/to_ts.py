@@ -31,23 +31,48 @@ from seedvii.utils import get_logger
 log = get_logger()
 
 
-def load_subject_as_clips_raw(subject: int, data_root: Path) -> tuple[list, np.ndarray]:
-    """Each case = one full clip of raw EEG (variable length)."""
+def _centre_crop(sig: np.ndarray, want_len: int) -> np.ndarray:
+    """Return the central ``want_len`` samples of ``sig`` (shape (C, T))."""
+    T = sig.shape[-1]
+    if T <= want_len:
+        return sig  # too short — keep as-is
+    start = (T - want_len) // 2
+    return sig[..., start : start + want_len]
+
+
+def load_subject_as_clips_raw(
+    subject: int, data_root: Path, middle_sec: float | None = None,
+    fs: int = 200,
+) -> tuple[list, np.ndarray]:
+    """Each case = one clip of raw EEG.
+
+    If ``middle_sec`` is given, extract the central ``middle_sec`` seconds
+    of each clip so all cases are equal length (``middle_sec * fs`` samples).
+    """
     mat = sio.loadmat(data_root / "EEG_preprocessed" / f"{subject}.mat")
+    want_len = int(round(middle_sec * fs)) if middle_sec else None
     X, y = [], []
     for vid in range(1, 81):
         if str(vid) not in mat:
             continue
         sig = mat[str(vid)].astype(np.float32)  # (62, T)
+        if want_len is not None:
+            sig = _centre_crop(sig, want_len)
         X.append(sig)
         y.append(VIDEO_LABELS[vid - 1])
     return X, np.asarray(y, dtype=np.int64)
 
 
-def load_subject_as_clips_de_flat(subject: int, data_root: Path
-                                  ) -> tuple[list, np.ndarray]:
-    """Each case = one clip of DE-LDS features (T_seconds, variable)."""
+def load_subject_as_clips_de_flat(
+    subject: int, data_root: Path, middle_sec: float | None = None,
+) -> tuple[list, np.ndarray]:
+    """Each case = one clip of DE-LDS features.
+
+    If ``middle_sec`` is given, extract the central ``middle_sec`` samples
+    (DE is at 1 Hz, so 1 sample = 1 second) so all cases are equal length.
+    """
     mat = sio.loadmat(data_root / "EEG_features" / f"{subject}.mat")
+    want_len = int(round(middle_sec)) if middle_sec else None
     X, y = [], []
     for vid in range(1, 81):
         key = f"de_LDS_{vid}"
@@ -56,6 +81,8 @@ def load_subject_as_clips_de_flat(subject: int, data_root: Path
         f = mat[key]  # (T, 5, 62)
         # reshape -> (310, T) so channels-first, time-last per aeon convention
         f2 = f.transpose(2, 1, 0).reshape(62 * 5, -1).astype(np.float32)
+        if want_len is not None:
+            f2 = _centre_crop(f2, want_len)
         X.append(f2)
         y.append(VIDEO_LABELS[vid - 1])
     return X, np.asarray(y, dtype=np.int64)
@@ -72,6 +99,10 @@ def parse_args() -> argparse.Namespace:
                    help="output directory (one subdir per feature type)")
     p.add_argument("--test-size", type=float, default=0.25,
                    help="fraction of clips for stratified test split")
+    p.add_argument("--middle-sec", type=float, default=None,
+                   help="if given, take the central N seconds of each clip "
+                        "so all cases are equal length (fair comparison "
+                        "across clips); e.g. 60 -> 12000 samples at 200 Hz")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
@@ -87,8 +118,9 @@ def main() -> None:
                else load_subject_as_clips_de_flat)
 
     for sub in args.subjects:
-        log.info("subject %d  (features=%s)", sub, args.features)
-        X, y = load_fn(sub, root)
+        log.info("subject %d  (features=%s, middle_sec=%s)",
+                 sub, args.features, args.middle_sec)
+        X, y = load_fn(sub, root, middle_sec=args.middle_sec)
         lengths = [x.shape[1] for x in X]
         log.info("  n_cases=%d  n_channels=%d  length min/mean/max=%d/%d/%d",
                  len(X), X[0].shape[0],
