@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-folds", type=int, default=3)
     p.add_argument("--n-jobs", type=int, default=-1)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--no-normalise", action="store_true",
+                   help="disable per-subject z-score (default: normalise=True)")
     p.add_argument("--out", default="results/logs/run_single.json")
     return p.parse_args()
 
@@ -64,19 +66,23 @@ def main() -> None:
     log.info("loading subjects %s  (features=%s, modality=%s) …",
              args.subjects, args.features, args.modality)
 
+    normalise = not args.no_normalise
+    log.info("normalise (per-subject z-score): %s", normalise)
+
     if args.features == "raw":
         if args.modality != "eeg":
             raise ValueError("raw features currently support EEG-only; use --modality eeg")
-        data = load_raw_multimodal(subject_ids=args.subjects, win_sec=args.win_sec)
+        data = load_raw_multimodal(
+            subject_ids=args.subjects, win_sec=args.win_sec, normalise=normalise)
         X = data["X_eeg"]  # (N, 62, win_len)
     elif args.features == "de_seq":
         if args.modality != "eeg":
             raise ValueError("de_seq currently supports EEG-only; use --modality eeg")
         data = load_de_sequence_multimodal(
-            subject_ids=args.subjects, win_sec=int(args.win_sec))
+            subject_ids=args.subjects, win_sec=int(args.win_sec), normalise=normalise)
         X = data["X_eeg"]  # (N, 310, win_sec)
     else:
-        data = load_multimodal(subject_ids=args.subjects)
+        data = load_multimodal(subject_ids=args.subjects, normalise=normalise)
         X = assemble_features(data, args.modality)
     y = data["y"]
     log.info("X shape=%s  y shape=%s  class counts=%s",
