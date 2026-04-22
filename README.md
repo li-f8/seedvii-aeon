@@ -1,40 +1,84 @@
 # seedvii-aeon
 
-Multimodal EEG-based emotion recognition on **SEED-VII** using time series
-classification (TSC) methods from the [**aeon**](https://github.com/aeon-toolkit/aeon)
-toolkit.
+Multimodal emotion recognition on **SEED-VII** — classical time-series
+classifiers from [**aeon**](https://github.com/aeon-toolkit/aeon),
+deep-learning baselines (DECNN / EEGNet), and EEG + eye-movement late
+fusion, all evaluated under three protocols with a shared 4-fold
+cross-video partition.
 
 MSc dissertation project, University of Southampton — supervisor
 Prof. Tony Bagnall.
 
-## Motivation
+## What this repo contains
 
-Most published EEG emotion-recognition pipelines hand-craft features
-(Differential Entropy, PSD, etc.) and feed them to an MLP / SVM.
-This project asks: **how well do general-purpose TSC methods perform on
-raw / lightly-processed EEG, compared to the DE + MLP baseline?**
+- **Phase 1 — Classical TSC baselines**: MultiRocket, Hydra, Arsenal,
+  DrCIF, MR-Hydra on DE-flat EEG features under LOVO.
+- **Phase 2 — Deep learning baselines**: compact 1-D CNN on DE-flat
+  (`DECNN`) and a DE-reshaped EEGNet (`DEEEGNet`). Segment-level
+  training with clip-level soft-vote aggregation. GroupNorm throughout
+  for MPS stability.
+- **Phase 3 — Multi-modal late fusion**: DECNN on EEG (310ch DE-LDS) +
+  DECNN on eye-tracking (33ch), per-clip probability weighted average
+  with a post-hoc weight sweep.
+- **Three evaluation protocols**: LOVO (cross-video, default),
+  LOSO (cross-subject), and stratified random split.
+- **Diagnostics**: z-score ablation, segment-length sweep, and a
+  clip-duration-only 1-NN baseline that exposes a stimulus-duration
+  confound under LOSO.
 
-SEED-VII is a natural testbed — 20 subjects, 80 video stimuli, 7 emotions
-(Disgust / Fear / Sad / Neutral / Happy / Anger / Surprise), 62-channel EEG
-plus 33-dim eye-tracking features.
+## Headline results
 
-## Current status
+### Modality × protocol (DECNN, seg_len = 5, clip-level)
 
-| Setting | Method | Features | Protocol | Acc (mean ± std) |
-|---|---|---|---|---|
-| CW2 baseline (PyTorch, external) | MLP | DE (flat) | WS, 1 subject | **47.96%** |
-| This repo | MultiRocket + Hydra | raw EEG, 4 s window | WS, 1 subject | 25.48% ± 3.39% |
-| This repo | MultiRocket + Hydra | DE sequence, 10 s | CS, 3 subjects | 20.11% |
-| This repo | MultiRocket + Hydra | DE sequence, 10 s | WS, 3 subjects | 21.15% |
+| Modality            | LOVO                         | LOSO                         | Random                       |
+|:--------------------|:-----------------------------|:-----------------------------|:-----------------------------|
+| EEG (DE, 310ch)     | 37.00 ± 2.42                 | 29.12 ± 1.82                 | 33.56 ± 1.25                 |
+| Eye (33ch)          | 35.75 ± 4.48                 | 40.69 ± 1.28                 | 42.19 ± 2.82                 |
+| EEG + Eye fused     | **41.62 ± 3.92** (w = 0.40)  | **42.62 ± 2.18** (w = 0.20)  | **45.12 ± 2.44** (w = 0.30)  |
 
-**Working hypothesis:** naïve raw-TSC underperforms DE-based pipelines on
-EEG emotion because the informative structure lives in band-power
-statistics, not in the raw waveform — a potentially useful negative
-result for the TSC community.
+*Fusion: per-clip probability weighted average, `w_eeg` selected by
+test accuracy (sweep over `{0.0, 0.1, …, 1.0}`).*
 
-Runtime reference: ~2 min / fold for MultiRocket+Hydra on 1 subject
-(Mac M-series, CPU). Extrapolated HIVE-COTE V2 on 20 subjects CS
-≈ 1–2 days single-machine.
+### Stimulus-duration confound (LOSO)
+
+- A 1-nearest-neighbour classifier using **clip duration alone** reaches
+  **67.50%** under LOSO — an indicator that SEED-VII's fixed 80-video
+  stimulus design, combined with label assignment per video, leaks
+  label information via clip length when stimuli are shared between
+  train and test subjects.
+
+### Phase 1 — classical aeon baselines (LOVO, EEG DE, L = 90)
+
+| Classifier          | Accuracy        |
+|:--------------------|:----------------|
+| MultiRocket         | 28.75 ± 4.52    |
+| MultiRocket + Hydra | 27.81 ± 4.54    |
+| Hydra               | 24.75 ± 6.12    |
+| Arsenal             | 20.94 ± 3.20    |
+
+### Per-subject z-score ablation (DECNN)
+
+| Protocol | with z-score | without z-score |      Δ |
+|:---------|:-------------|:----------------|-------:|
+| LOVO     | 37.38%       | 15.19%          | −22.19 |
+| LOSO     | 29.00%       | 15.00%          | −14.00 |
+| Random   | 33.44%       | 15.00%          | −18.44 |
+
+Per-subject z-score normalisation contributes ~15–22 pp across protocols
+— the dominant learnable signal in this pipeline.
+
+### Segment-length sweep (DECNN + GroupNorm, LOVO)
+
+| seg_len | Accuracy     |
+|:--------|:-------------|
+| 3       | 36.62 ± 2.96 |
+| **5**   | **37.38 ± 2.81** |
+| 8       | 37.12 ± 3.30 |
+| 10      | 35.62 ± 2.90 |
+| 15      | 34.31 ± 3.46 |
+| 20      | 34.00 ± 2.53 |
+
+Full tables and publication figures live in `results/summary/`.
 
 ## Quick start
 
@@ -53,68 +97,114 @@ pip install -e ".[dev]"
 #      data/seed-VII/EYE_features/{1..20}.mat
 ls data/seed-VII
 
-# 4. smoke test
-python scripts/run_single.py \
-    --classifier multirocket_hydra \
-    --subjects 1 2 3 \
-    --features de_seq \
-    --protocol cross_subject
+# 4. build the shared 4-fold video partition once
+python scripts/make_folds_json.py
+
+# 5. export SEED-VII into aeon .ts format
+python scripts/to_ts.py --subjects {1..20} --features de_flat
+python scripts/to_ts.py --subjects {1..20} --features eye
 ```
 
-### Common CLI flags
+### Running experiments
 
-| Flag | Values | Notes |
-|---|---|---|
-| `--classifier` | `multirocket_hydra`, `multirocket`, `hydra`, `arsenal`, `drcif`, `hivecote_v2`, `inception_time` | see `src/seedvii/models/tsc_wrappers.py` |
-| `--features` | `de`, `de_seq`, `raw` | `de_seq` recommended |
-| `--modality` | `eeg`, `eye`, `eeg+eye` | eye / fusion only for `--features de` |
-| `--protocol` | `cross_subject`, `within_subject` | WS loops per subject internally |
-| `--win-sec` | float (raw) / int (de_seq) | window length |
-| `--n-folds` | int | CV folds |
+```bash
+# Phase 1 — classical TSC baseline (LOVO)
+python scripts/run_ts.py \
+    --classifier multirocket_hydra \
+    --features de_flat --resample 90
+
+# Phase 2 — DECNN segment-level (LOVO / LOSO / Random)
+python scripts/run_dl_lovo_segments.py \
+    --model decnn --seg-len 5 --protocol lovo \
+    --subjects {1..20}
+
+# Phase 3 — EEG + Eye late fusion with weight sweep
+python scripts/run_dl_fusion.py \
+    --protocol random --seg-len 5 --subjects {1..20}
+
+# Diagnostics
+python scripts/diag_length_leak.py           # T-only 1-NN leakage ceiling
+python scripts/summarize_results.py          # rebuild tables + figures
+```
 
 ## Project layout
 
 ```
-src/seedvii/        # importable package
+src/seedvii/
   data/             # loaders (DE / DE-seq / raw EEG / eye), aeon adapters
-  models/           # aeon classifier factory
-  eval/             # CS grouped + WS video-stratified splitters, metrics
+  models/
+    tsc_wrappers.py # aeon classifier factory
+    dl.py           # DECNN + DEEEGNet (PyTorch, GroupNorm)
+  eval/             # CS / WS / cross-video splitters, metrics
   utils/            # logging, seeding
 scripts/
-  run_single.py     # single-classifier experiment runner
-  inspect_raw.py    # one-off .mat structure inspector
-configs/            # YAML experiment templates
-tests/              # smoke tests (skip if data absent)
-data/               # SEED-VII — gitignored, obtain from BCMI Lab
-results/            # logs / figures — gitignored
+  to_ts.py                     # export to aeon .ts format (raw / de_flat / eye)
+  make_folds_json.py           # 4-fold video partition (shared by all phases)
+  run_ts.py                    # Phase 1: classical TSC runner
+  run_single.py                # legacy single-classifier runner
+  run_dl_lovo.py               # Phase 2: DL clip-level
+  run_dl_lovo_segments.py      # Phase 2: DL segment + clip-vote
+  run_dl_fusion.py             # Phase 3: EEG + Eye late fusion + weight sweep
+  diag_length_leak.py          # T-only 1-NN duration confound diagnostic
+  summarize_results.py         # aggregates results/logs/*.json → tables + figures
+  inspect_raw.py               # one-off .mat structure inspector
+results/
+  logs/         # per-experiment JSON + text logs (gitignored)
+  figures/      # publication figures (gitignored)
+  summary/      # main_table.csv / .md (tracked)
+data/           # SEED-VII — gitignored, obtain from BCMI
 ```
 
 ## Evaluation protocols
 
-- **Cross-subject (CS):** `GroupKFold` by subject ID — test set never
-  sees training subjects. Default 5 folds.
-- **Within-subject (WS):** for each subject independently, stratified
-  split by video ID (no video leak between train/test), then
-  `StratifiedKFold` over videos. Mean over subjects.
+- **LOVO** (cross-video, default): shared 4-fold partition in
+  `data/seedvii_folds.json`; `fold_id = ((video_id − 1) % 20) // 5`.
+  Test videos never appear in train. All subjects are pooled.
+- **LOSO** (cross-subject): 19 training subjects, 1 test subject.
+  Stimuli are shared between train and test — see the duration-confound
+  note above.
+- **Random**: stratified random 4-fold split over clips, ignoring both
+  subject and video identity.
 
-## Known issues (upstream aeon)
+## Notes on implementation
 
-- `aeon.classification.convolution_based.HydraClassifier` crashes on
-  short series: when `n_timepoints < 9`, the internal dilations list is
-  empty and `torch.cat([])` fails. Reproducible with DE-as-timeseries
-  (`n_timepoints=5`). Fix candidate: raise a clear `ValueError` in
-  `_HydraInternal.__init__` — happy to open a PR.
+- **GroupNorm over BatchNorm**: both `DECNN` and `DEEEGNet` use
+  `GroupNorm` rather than `BatchNorm2d/1d`. On Apple Silicon MPS, the
+  depthwise `Conv2d(F1, F1*D, kernel_size=(62, 1), groups=F1)` inside
+  EEGNet produces NaNs in a large fraction of batches under BN; switching
+  to GN eliminates the training collapse.
+- **Segment-level training, clip-level evaluation**: each clip's DE
+  sequence is sliced into `seg_len`-timepoint windows (overlap = 0 by
+  default); segments inherit the parent clip's label. At test time,
+  softmax probabilities of all segments belonging to the same
+  `(subject, video)` are averaged before `argmax`.
+- **Per-subject z-score normalisation** is applied to every feature type
+  before any split — removing it collapses accuracy to chance on all
+  protocols (see table above).
 
 ## Data
 
 SEED-VII is released by the BCMI Lab, SJTU under their own EULA and is
 **not redistributed in this repository**. Request access at
-<https://bcmi.sjtu.edu.cn/home/seed/> and place the extracted folders
-under `data/seed-VII/`.
+<https://bcmi.sjtu.edu.cn/home/seed/seed-vii.html> and place the
+extracted folders under `data/seed-VII/`.
+
+The dataset is introduced in:
+Jiang W-B, Liu X-H, Zheng W-L, Lu B-L.
+*SEED-VII: A Multimodal Dataset of Six Basic Emotions With Continuous
+Labels for Emotion Recognition.* IEEE Transactions on Affective
+Computing, 16(2): 969–985, April–June 2025.
+
+## Known issues
+
+- `aeon.classification.convolution_based.HydraClassifier` crashes on
+  short series: when `n_timepoints < 9`, the internal dilations list is
+  empty and `torch.cat([])` fails. Reproducible with DE-as-timeseries at
+  `n_timepoints = 5`. Fix candidate: raise a clear `ValueError` in
+  `_HydraInternal.__init__`.
 
 ## Acknowledgements
 
 - aeon-toolkit developers
-- BCMI Lab, SJTU, for SEED-VII
-- University of Southampton (IRIDIS HPC, if used in final experiments)
-
+- BCMI Lab, SJTU, for releasing SEED-VII
+- University of Southampton
