@@ -31,8 +31,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--classifier", default="multirocket_hydra")
     p.add_argument("--subjects", type=int, nargs="+", default=[1, 2, 3])
-    p.add_argument("--protocol", choices=["cross_subject", "within_subject"],
-                   default="cross_subject")
+    p.add_argument("--protocol", choices=["cross_subject", "within_subject", "loso"],
+                   default="cross_subject",
+                   help="loso = cross_subject with n_folds = n_subjects")
     p.add_argument("--modality", choices=["eeg", "eye", "eeg+eye"], default="eeg")
     p.add_argument("--features", choices=["de", "de_seq", "raw"], default="de_seq",
                    help="de = flat DE per second; de_seq = windowed DE time series "
@@ -63,6 +64,12 @@ def assemble_features(data: dict, modality: str) -> np.ndarray:
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
+
+    # LOSO = cross_subject with n_folds = n_subjects
+    if args.protocol == "loso":
+        args.protocol = "cross_subject"
+        args.n_folds = len(args.subjects)
+        log.info("LOSO mode: protocol=cross_subject, n_folds=%d", args.n_folds)
     log.info("loading subjects %s  (features=%s, modality=%s) …",
              args.subjects, args.features, args.modality)
 

@@ -88,13 +88,46 @@ def load_subject_as_clips_de_flat(
     return X, np.asarray(y, dtype=np.int64)
 
 
+def load_subject_as_clips_eye(
+    subject: int, data_root: Path, middle_sec: float | None = None,
+) -> tuple[list, np.ndarray]:
+    """Each case = one clip of 33-dim eye-movement features.
+
+    EYE_features/{subject}.mat stores one key per video ("1".."80"), each
+    shaped (T_vid, 33). We transpose to (33, T_vid) for channels-first
+    aeon convention so the file format matches de_flat exactly (just with
+    33 channels instead of 310).
+    """
+    mat = sio.loadmat(data_root / "EYE_features" / f"{subject}.mat")
+    want_len = int(round(middle_sec)) if middle_sec else None
+    X, y = [], []
+    for vid in range(1, 81):
+        key = str(vid)
+        if key not in mat:
+            continue
+        f = mat[key].astype(np.float32)   # (T_vid, 33)
+        if f.ndim != 2 or f.shape[1] != 33:
+            raise ValueError(
+                f"subject {subject} video {vid}: expected (T, 33), got "
+                f"{f.shape}")
+        f2 = f.T.astype(np.float32)       # (33, T_vid)
+        if want_len is not None:
+            f2 = _centre_crop(f2, want_len)
+        X.append(f2)
+        y.append(VIDEO_LABELS[vid - 1])
+    return X, np.asarray(y, dtype=np.int64)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--subjects", type=int, nargs="+", required=True,
                    help="subject IDs 1..20")
-    p.add_argument("--features", choices=["raw", "de_flat"], default="raw",
+    p.add_argument("--features", choices=["raw", "de_flat", "eye"],
+                   default="raw",
                    help="raw = preprocessed EEG @200Hz (62 ch); "
-                        "de_flat = DE-LDS (310 ch, 1Hz)")
+                        "de_flat = DE-LDS (310 ch, 1Hz); "
+                        "eye = eye-movement features (33 ch, 1Hz, aligned "
+                        "per-video with DE-LDS timepoints)")
     p.add_argument("--out", default="data/ts",
                    help="output directory (one subdir per feature type)")
     p.add_argument("--test-size", type=float, default=0.25,
@@ -113,9 +146,14 @@ def main() -> None:
     out_dir = Path(args.out) / args.features
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    load_fn = (load_subject_as_clips_raw
-               if args.features == "raw"
-               else load_subject_as_clips_de_flat)
+    if args.features == "raw":
+        load_fn = load_subject_as_clips_raw
+    elif args.features == "de_flat":
+        load_fn = load_subject_as_clips_de_flat
+    elif args.features == "eye":
+        load_fn = load_subject_as_clips_eye
+    else:
+        raise ValueError(args.features)
 
     for sub in args.subjects:
         log.info("subject %d  (features=%s, middle_sec=%s)",
